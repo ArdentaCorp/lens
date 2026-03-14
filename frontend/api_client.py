@@ -2,7 +2,7 @@ from pathlib import PurePosixPath
 
 import requests
 
-API_BASE = "http://localhost:8002"
+API_BASE = "http://localhost:8000"
 
 
 def _url(path: str) -> str:
