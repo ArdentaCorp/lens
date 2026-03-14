@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Uploads & data
+backend/data/uploads/
+images/
+*.db
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
