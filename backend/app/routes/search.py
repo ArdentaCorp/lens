@@ -262,9 +262,18 @@ async def investigate(body: InvestigateRequest, db: AsyncSession = Depends(get_d
                 "attributes": img.analysis.attributes,
             })
 
-    # Step 4: Generate investigative summary
+    # Step 4: Generate investigative summary + relevance filtering
     try:
-        summary = await generate_investigation_summary(body.query, analyses)
+        summary, relevant_indices = await generate_investigation_summary(
+            body.query, analyses)
+        # Filter matched_ids to only LLM-relevant images (indices are 1-based)
+        filtered_ids = [
+            matched_ids[i - 1]
+            for i in relevant_indices
+            if 1 <= i <= len(matched_ids)
+        ]
+        if filtered_ids:
+            matched_ids = filtered_ids
     except Exception as e:
         logger.error("LLM summary failed: %s", e)
         summary = (

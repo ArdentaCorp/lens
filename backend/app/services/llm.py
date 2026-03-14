@@ -59,13 +59,8 @@ def _parse_analysis(analysis: dict) -> tuple[list, dict]:
     return objects, attributes
 
 
-async def generate_investigation_summary(
-    query: str,
-    image_analyses: list[dict],
-) -> str:
-    """Given a user question and a list of image analysis dicts, produce a grounded summary."""
-    client = _get_client()
-
+def _build_evidence_text(image_analyses: list[dict]) -> str:
+    """Build structured evidence text from image analyses."""
     evidence_parts: list[str] = []
     for i, analysis in enumerate(image_analyses, 1):
         objects, attributes = _parse_analysis(analysis)
@@ -101,8 +96,17 @@ async def generate_investigation_summary(
 
         evidence_parts.append("\n".join(parts))
 
-    evidence_text = "\n\n".join(
-        evidence_parts) if evidence_parts else "No image evidence available."
+    return "\n\n".join(evidence_parts) if evidence_parts else "No image evidence available."
+
+
+async def generate_investigation_summary(
+    query: str,
+    image_analyses: list[dict],
+) -> tuple[str, list[int]]:
+    """Given a user question and image analyses, produce a summary and list of relevant image indices (1-based)."""
+    client = _get_client()
+
+    evidence_text = _build_evidence_text(image_analyses)
 
     system_prompt = (
         "You are an expert image investigation assistant analyzing a collection of images.\n\n"
@@ -112,16 +116,22 @@ async def generate_investigation_summary(
         "- Describe what you can determine: who/what is shown, where, in what context.\n"
         "- If the question cannot be fully answered from the evidence, say what IS known and what is missing.\n"
         "- Be detailed and investigative, like writing a brief report.\n"
-        "- Use bullet points or short paragraphs for clarity."
+        "- Use bullet points or short paragraphs for clarity.\n\n"
+        "IMPORTANT: You must respond in this EXACT format:\n"
+        "RELEVANT_IMAGES: [comma-separated image numbers that are directly relevant to the question]\n"
+        "SUMMARY:\n"
+        "<your detailed summary here>\n\n"
+        "Only include images that are DIRECTLY relevant to the question. "
+        "If an image only tangentially relates (e.g. cars in background when asking about a specific car), exclude it."
     )
 
     user_prompt = f"""Investigation Question: {query}
 
-Evidence from {len(image_analyses)} matched image(s):
+Evidence from {len(image_analyses)} candidate image(s):
 
 {evidence_text}
 
-Based on the evidence above, provide a detailed investigative summary answering the question."""
+First identify which images are directly relevant to the question, then provide a detailed investigative summary."""
 
     response = await client.chat.completions.create(
         model=settings.llm_model,
@@ -133,4 +143,29 @@ Based on the evidence above, provide a detailed investigative summary answering 
         temperature=0.2,
     )
 
-    return response.choices[0].message.content or "Unable to generate summary."
+    raw = response.choices[0].message.content or ""
+
+    # Parse RELEVANT_IMAGES and SUMMARY from the response
+    relevant_indices: list[int] = []
+    summary = raw
+
+    if "RELEVANT_IMAGES:" in raw and "SUMMARY:" in raw:
+        parts = raw.split("SUMMARY:", 1)
+        header = parts[0]
+        summary = parts[1].strip() if len(parts) > 1 else raw
+
+        # Extract image numbers from header
+        for line in header.splitlines():
+            if "RELEVANT_IMAGES:" in line:
+                nums_str = line.split("RELEVANT_IMAGES:", 1)[
+                    1].strip().strip("[]")
+                for token in nums_str.split(","):
+                    token = token.strip()
+                    if token.isdigit():
+                        relevant_indices.append(int(token))
+
+    # If parsing failed, assume all images are relevant
+    if not relevant_indices:
+        relevant_indices = list(range(1, len(image_analyses) + 1))
+
+    return summary, relevant_indices
