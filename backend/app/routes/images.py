@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import shutil
@@ -30,6 +31,42 @@ router = APIRouter(prefix="/images", tags=["images"])
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg",
                       ".png", ".gif", ".bmp", ".webp", ".tiff"}
+
+_analyze_sem = asyncio.Semaphore(settings.analysis_concurrency)
+
+
+async def _analyze_single(img: Image, db: AsyncSession) -> None:
+    """Run vision analysis + embedding for one image, bounded by semaphore."""
+    async with _analyze_sem:
+        try:
+            parsed = await vision_analyze(img.image_path)
+            detected_objects = json.dumps(parsed.get("detected_objects", []))
+            attrs = parsed.get("attributes", {})
+            if "description" in parsed:
+                attrs["description"] = parsed["description"]
+            if "classification" in parsed:
+                attrs["classification"] = parsed["classification"]
+            attributes = json.dumps(attrs)
+
+            embedding_json = None
+            try:
+                emb_text = build_embedding_text(parsed)
+                emb_vec = await get_embedding(emb_text)
+                embedding_json = json.dumps(emb_vec)
+            except Exception as e:
+                logger.warning("Embedding failed for image %s: %s", img.id, e)
+
+            search_text = build_search_text(parsed)
+            db.add(ImageAnalysis(
+                image_id=img.id,
+                detected_objects=detected_objects,
+                attributes=attributes,
+                embedding=embedding_json,
+                search_text=search_text,
+                confidence=1.0,
+            ))
+        except Exception as e:
+            logger.error("Auto-analyze failed for image %s: %s", img.id, e)
 
 
 def _safe_filename(filename: str) -> str:
@@ -106,38 +143,8 @@ async def upload_images(
     for img in uploaded:
         await db.refresh(img)
 
-    # Auto-analyze uploaded images
-    for img in uploaded:
-        try:
-            parsed = await vision_analyze(img.image_path)
-            detected_objects = json.dumps(parsed.get("detected_objects", []))
-            attrs = parsed.get("attributes", {})
-            if "description" in parsed:
-                attrs["description"] = parsed["description"]
-            if "classification" in parsed:
-                attrs["classification"] = parsed["classification"]
-            attributes = json.dumps(attrs)
-
-            # Compute embedding
-            embedding_json = None
-            try:
-                emb_text = build_embedding_text(parsed)
-                emb_vec = await get_embedding(emb_text)
-                embedding_json = json.dumps(emb_vec)
-            except Exception as e:
-                logger.warning("Embedding failed for image %s: %s", img.id, e)
-
-            search_text = build_search_text(parsed)
-            db.add(ImageAnalysis(
-                image_id=img.id,
-                detected_objects=detected_objects,
-                attributes=attributes,
-                embedding=embedding_json,
-                search_text=search_text,
-                confidence=1.0,
-            ))
-        except Exception as e:
-            logger.error("Auto-analyze failed for image %s: %s", img.id, e)
+    # Auto-analyze uploaded images (parallel, bounded by semaphore)
+    await asyncio.gather(*[_analyze_single(img, db) for img in uploaded])
     await db.commit()
 
     return uploaded
@@ -179,40 +186,11 @@ async def import_folder(
 
     await db.commit()
 
-    # Auto-analyze imported images
+    # Auto-analyze imported images (parallel, bounded by semaphore)
     stmt = select(Image).where(Image.filename.in_(imported_names))
     result = await db.execute(stmt)
     new_images = result.scalars().all()
-    for img in new_images:
-        try:
-            parsed = await vision_analyze(img.image_path)
-            detected_objects = json.dumps(parsed.get("detected_objects", []))
-            attrs = parsed.get("attributes", {})
-            if "description" in parsed:
-                attrs["description"] = parsed["description"]
-            if "classification" in parsed:
-                attrs["classification"] = parsed["classification"]
-            attributes = json.dumps(attrs)
-
-            embedding_json = None
-            try:
-                emb_text = build_embedding_text(parsed)
-                emb_vec = await get_embedding(emb_text)
-                embedding_json = json.dumps(emb_vec)
-            except Exception as e:
-                logger.warning("Embedding failed for image %s: %s", img.id, e)
-
-            search_text = build_search_text(parsed)
-            db.add(ImageAnalysis(
-                image_id=img.id,
-                detected_objects=detected_objects,
-                attributes=attributes,
-                embedding=embedding_json,
-                search_text=search_text,
-                confidence=1.0,
-            ))
-        except Exception as e:
-            logger.error("Auto-analyze failed for image %s: %s", img.id, e)
+    await asyncio.gather(*[_analyze_single(img, db) for img in new_images])
     await db.commit()
 
     return ImportFolderResponse(imported=len(imported_names), filenames=imported_names)

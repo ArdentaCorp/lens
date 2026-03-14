@@ -88,14 +88,18 @@ async def search_images(body: SearchRequest, db: AsyncSession = Depends(get_db))
     except Exception as e:
         logger.warning("FTS search failed: %s", e)
 
+    # ── Load all images ONCE for semantic + keyword scoring ──
+    stmt = select(Image).options(selectinload(Image.analysis))
+    if body.source:
+        stmt = stmt.where(Image.source == body.source)
+    result = await db.execute(stmt)
+    all_imgs = {img.id: img for img in result.scalars().all()}
+
     # ── 2) Semantic (embedding) search ─────────────────
     if body.semantic:
         try:
             query_vec = await get_embedding(expanded_query)
-            stmt = select(Image).options(selectinload(Image.analysis))
-            result = await db.execute(stmt)
-            all_images = result.scalars().all()
-            for img in all_images:
+            for img in all_imgs.values():
                 if img.analysis and img.analysis.embedding:
                     try:
                         doc_vec = json.loads(img.analysis.embedding)
@@ -110,11 +114,6 @@ async def search_images(body: SearchRequest, db: AsyncSession = Depends(get_db))
             logger.warning("Semantic search failed: %s", e)
 
     # ── 3) Keyword boost + primary subject bonus ─────
-    stmt = select(Image).options(selectinload(Image.analysis))
-    if body.source:
-        stmt = stmt.where(Image.source == body.source)
-    result = await db.execute(stmt)
-    all_imgs = {img.id: img for img in result.scalars().all()}
 
     for img_id, img in all_imgs.items():
         if not img.analysis:
@@ -146,15 +145,6 @@ async def search_images(body: SearchRequest, db: AsyncSession = Depends(get_db))
         return SearchResult(images=[], total=0, search_method="none")
 
     ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
-
-    # Load all matched images (use cached all_imgs if available)
-    missing_ids = [i for i in ranked_ids if i not in all_imgs]
-    if missing_ids:
-        stmt = select(Image).options(selectinload(Image.analysis)
-                                     ).where(Image.id.in_(missing_ids))
-        result = await db.execute(stmt)
-        for img in result.scalars().all():
-            all_imgs[img.id] = img
 
     # ── 5) Apply filters ──────────────────────────────
     final: list[Image] = []

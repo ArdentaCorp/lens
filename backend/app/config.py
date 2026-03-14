@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     llm_model: str = "google/gemini-2.0-flash-001"
     embedding_model: str = "openai/text-embedding-3-small"
 
+    # API auth
+    api_key: str = ""  # Set to require X-API-Key header; empty = no auth
+
+    # Caching
+    embedding_cache_size: int = 256
+    llm_cache_size: int = 64
+
+    # Processing
+    analysis_concurrency: int = 4  # Max parallel vision API calls
+
     model_config = {"env_file": [
         ".env", ".env.local"], "env_file_encoding": "utf-8"}
 

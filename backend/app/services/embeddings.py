@@ -1,4 +1,5 @@
 """Text embedding service for semantic search via OpenRouter."""
+import hashlib
 import logging
 
 from openai import AsyncOpenAI
@@ -8,6 +9,9 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
+
+# In-memory cache for query embeddings (avoids duplicate API calls)
+_embedding_cache: dict[str, list[float]] = {}
 
 
 def _get_client() -> AsyncOpenAI:
@@ -20,14 +24,28 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
+def _cache_key(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 async def get_embedding(text: str) -> list[float]:
-    """Get a text embedding vector from the embedding model."""
+    """Get a text embedding vector. Cached by content hash."""
+    key = _cache_key(text)
+    if key in _embedding_cache:
+        return _embedding_cache[key]
+
     client = _get_client()
     response = await client.embeddings.create(
         model=settings.embedding_model,
         input=text,
     )
-    return response.data[0].embedding
+    vec = response.data[0].embedding
+
+    # Bounded cache — evict oldest if full
+    if len(_embedding_cache) >= settings.embedding_cache_size:
+        _embedding_cache.pop(next(iter(_embedding_cache)))
+    _embedding_cache[key] = vec
+    return vec
 
 
 # ── Gender / person synonym groups ────────────────────

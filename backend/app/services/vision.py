@@ -100,7 +100,7 @@ async def analyze_image(image_path: str) -> dict:
                 ],
             }
         ],
-        max_tokens=4096,
+        max_tokens=2000,
         temperature=0.1,
     )
 

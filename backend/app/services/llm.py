@@ -1,10 +1,17 @@
+import hashlib
 import json
+import logging
 
 from openai import AsyncOpenAI
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 _client: AsyncOpenAI | None = None
+
+# In-memory cache for keyword extraction (question hash → keywords)
+_keyword_cache: dict[str, str] = {}
 
 
 def _get_client() -> AsyncOpenAI:
@@ -19,6 +26,11 @@ def _get_client() -> AsyncOpenAI:
 
 async def extract_search_keywords(question: str) -> str:
     """Use the LLM to extract search keywords from a natural language question."""
+    # Check cache first
+    cache_key = hashlib.sha256(question.lower().strip().encode()).hexdigest()
+    if cache_key in _keyword_cache:
+        return _keyword_cache[cache_key]
+
     client = _get_client()
     response = await client.chat.completions.create(
         model=settings.llm_model,
@@ -39,7 +51,13 @@ async def extract_search_keywords(question: str) -> str:
         temperature=0.0,
     )
     keywords = (response.choices[0].message.content or question).strip()
-    return keywords if keywords else question
+    result = keywords if keywords else question
+
+    # Bounded cache
+    if len(_keyword_cache) >= settings.llm_cache_size:
+        _keyword_cache.pop(next(iter(_keyword_cache)))
+    _keyword_cache[cache_key] = result
+    return result
 
 
 def _parse_analysis(analysis: dict) -> tuple[list, dict]:

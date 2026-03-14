@@ -1,0 +1,17 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - backend-data:/app/data
+      - uploads:/app/data/uploads
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  uploads:

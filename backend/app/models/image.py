@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -8,6 +8,11 @@ from app.models.base import Base
 
 class Image(Base):
     __tablename__ = "images"
+    __table_args__ = (
+        Index("ix_images_created_at", "created_at"),
+        Index("ix_images_source", "source"),
+        Index("ix_images_phash", "phash"),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True)
